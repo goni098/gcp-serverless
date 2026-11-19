@@ -4,7 +4,7 @@ use pinocchio::error::ProgramError;
 use pinocchio::{AccountView, Address, ProgramResult};
 use pinocchio_constraints::{Accounts, Context};
 
-use crate::error::{PtokenError, ensure};
+use crate::error::ensure;
 use crate::event::emit;
 use crate::state::Vault;
 
@@ -70,21 +70,6 @@ pub fn process(
         ..
     } = ctx.accounts;
 
-    ensure!(
-        !vault.owned_by(program_id),
-        PtokenError::VaultAlreadyInitialized
-    );
-    ensure!(
-        vault.owned_by(system_program.address()),
-        PtokenError::InvalidVaultStateOwner
-    );
-    ensure!(vault.is_data_empty(), PtokenError::InvalidVaultState);
-    ensure!(
-        token_program.address() != &pinocchio_token_2022::ID
-            || mint.data_len() == pinocchio_token_2022::state::Mint::BASE_LEN,
-        PtokenError::UnsupportedToken2022Mint
-    );
-
     let bump = [ctx.bumps.vault];
     let seeds = [
         Seed::from(Vault::SEED),
@@ -112,7 +97,13 @@ pub fn process(
     }
     .invoke()?;
 
-    let vault_data = Vault::new(payer, mint, vault_token, token_program);
+    let vault_data = Vault {
+        discriminator: Vault::DISCRIMINATOR,
+        authority: *payer.address().as_array(),
+        mint: *mint.address().as_array(),
+        token_vault: *vault_token.address().as_array(),
+        token_program: *token_program.address().as_array(),
+    };
 
     vault
         .try_borrow_mut()?

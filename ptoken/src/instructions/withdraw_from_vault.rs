@@ -2,7 +2,6 @@ use bytemuck::{Pod, Zeroable};
 use pinocchio::cpi::{Seed, Signer};
 use pinocchio::error::ProgramError;
 use pinocchio::{AccountView, Address, ProgramResult};
-use pinocchio_constraints::spl::ensure_token_account;
 use pinocchio_constraints::{Accounts, Context};
 
 use crate::error::{PtokenError, ensure};
@@ -64,6 +63,7 @@ pub fn process(
     args: WithdrawFromVaultArgs,
 ) -> ProgramResult {
     let ctx = Context::<WithdrawFromVault<'_>>::try_from_accounts(program_id, accounts)?;
+
     let WithdrawFromVault {
         payer,
         mint,
@@ -72,13 +72,6 @@ pub fn process(
         destination,
         token_program,
     } = ctx.accounts;
-
-    Vault::new(payer, mint, vault_token, token_program).validate_data(vault)?;
-    ensure!(
-        destination.address() != vault_token.address(),
-        PtokenError::WithdrawalDestinationIsVault
-    );
-    ensure_token_account(destination, token_program, Some(payer), Some(mint))?;
 
     let bump = [ctx.bumps.vault];
     let seeds = [

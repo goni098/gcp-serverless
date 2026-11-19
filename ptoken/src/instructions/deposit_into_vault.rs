@@ -49,13 +49,13 @@ struct DepositIntoVault<'acc> {
         seeds = [Vault::SEED, payer.address().as_ref(), mint.address().as_ref()],
         bump
     )]
-    vault: &'acc AccountView,
+    _vault: &'acc AccountView,
 
     #[account(mut)]
     #[associated_token(
         program = token_program,
         mint = mint,
-        authority = vault,
+        authority = _vault,
     )]
     vault_token: &'acc AccountView,
 
@@ -68,16 +68,16 @@ pub fn process(
     accounts: &[AccountView],
     args: DepositIntoVaultArgs,
 ) -> ProgramResult {
+    let ctx = Context::<DepositIntoVault<'_>>::try_from_accounts(program_id, accounts)?;
+
     let DepositIntoVault {
         payer,
         mint,
         source_token,
-        vault,
         vault_token,
         token_program,
-    } = Context::<DepositIntoVault<'_>>::try_from_accounts(program_id, accounts)?.accounts;
-
-    Vault::new(payer, mint, vault_token, token_program).validate_data(vault)?;
+        ..
+    } = ctx.accounts;
 
     pinocchio_token::instructions::Transfer::new(source_token, vault_token, payer, args.amount)
         .invoke_with_program(token_program.address())?;
