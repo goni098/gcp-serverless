@@ -14,6 +14,11 @@
 //! Enable the optional `spl` feature for `#[program(spl)]`, mint constraints,
 //! and token account constraints, including `#[associated_token(...)]`.
 //!
+//! Use `#[instruction(args: ArgsType)]` to reference decoded instruction arguments in
+//! constraints. Pass the arguments by reference to [`Context::try_from_accounts_with_args`].
+//! Pass a mutable account slice to [`Context`] when the accounts struct has
+//! `&mut AccountView` fields.
+//!
 //! ```
 //! use pinocchio_constraints::{AccountView, Accounts, Address, Context, ProgramError};
 //!
@@ -64,21 +69,85 @@ pub trait Accounts<'acc>: Sized {
     ) -> Result<(Self, Self::Bumps, &'acc [AccountView]), ProgramError>;
 }
 
+/// Binds and validates accounts using decoded instruction arguments.
+pub trait AccountsWithArgs<'acc>: Sized {
+    /// The input and remaining account slices. The derive uses a mutable slice when a field
+    /// requires a mutable view, and a shared slice otherwise.
+    type AccountSlice;
+    /// The decoded argument type declared by `#[instruction(...)]`.
+    type Args: ?Sized;
+    /// Contains a validated bump for each PDA field. The derive uses `()` when there are none.
+    type Bumps;
+
+    /// Bind and validate the instruction's accounts using the supplied arguments.
+    fn try_accounts_with_args(
+        program_id: &Address,
+        accounts: Self::AccountSlice,
+        args: &Self::Args,
+    ) -> Result<(Self, Self::Bumps, Self::AccountSlice), ProgramError>;
+}
+
+impl<'acc, T: Accounts<'acc>> AccountsWithArgs<'acc> for T {
+    type AccountSlice = &'acc [AccountView];
+    type Args = ();
+    type Bumps = T::Bumps;
+
+    fn try_accounts_with_args(
+        program_id: &Address,
+        accounts: &'acc [AccountView],
+        _args: &(),
+    ) -> Result<(Self, Self::Bumps, &'acc [AccountView]), ProgramError> {
+        T::try_accounts(program_id, accounts)
+    }
+}
+
+/// Marks account types whose validation can run without an instruction argument binding.
+pub trait AccountsWithoutArgs<'acc>: AccountsWithArgs<'acc, Args = ()> {}
+
+impl<'acc, T: Accounts<'acc>> AccountsWithoutArgs<'acc> for T {}
+
 /// The validated accounts, their PDA bumps, and the remaining accounts for an instruction.
-pub struct Context<'acc, T: Accounts<'acc>> {
+pub struct Context<'acc, T: AccountsWithArgs<'acc>> {
     pub accounts: T,
     pub bumps: T::Bumps,
     /// Accounts supplied after the declared fields. Validate these before use.
-    pub remaining_accounts: &'acc [AccountView],
+    pub remaining_accounts: T::AccountSlice,
 }
 
-impl<'acc, T: Accounts<'acc>> Context<'acc, T> {
+impl<'acc, T: AccountsWithoutArgs<'acc>> Context<'acc, T> {
     /// Construct a context after validating the supplied accounts.
     pub fn try_from_accounts(
         program_id: &Address,
-        accounts: &'acc [AccountView],
+        accounts: T::AccountSlice,
     ) -> Result<Self, ProgramError> {
-        let (accounts, bumps, remaining_accounts) = T::try_accounts(program_id, accounts)?;
+        Self::try_from_accounts_with_args(program_id, accounts, &())
+    }
+}
+
+impl<'acc, T: AccountsWithArgs<'acc>> Context<'acc, T> {
+    /// Construct a context after validating the supplied accounts with decoded arguments.
+    ///
+    /// A derive with `#[instruction(...)]` requires this constructor.
+    ///
+    /// ```compile_fail
+    /// use pinocchio_constraints::{AccountView, Accounts, Address, Context};
+    ///
+    /// #[derive(Accounts)]
+    /// #[instruction(vault_id: u64)]
+    /// struct OpenVault<'acc> {
+    ///     #[account(seeds = [b"vault", &vault_id.to_le_bytes()], bump)]
+    ///     vault: &'acc AccountView,
+    /// }
+    ///
+    /// let _ = Context::<OpenVault<'_>>::try_from_accounts(&Address::default(), &[]);
+    /// ```
+    pub fn try_from_accounts_with_args(
+        program_id: &Address,
+        accounts: T::AccountSlice,
+        args: &T::Args,
+    ) -> Result<Self, ProgramError> {
+        let (accounts, bumps, remaining_accounts) =
+            T::try_accounts_with_args(program_id, accounts, args)?;
         Ok(Self {
             accounts,
             bumps,

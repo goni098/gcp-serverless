@@ -55,6 +55,94 @@ fn constructs_a_context_only_for_valid_accounts() {
 }
 
 #[test]
+fn binds_mutable_and_shared_views_after_validation() {
+    #[derive(Accounts)]
+    struct UpdateAccounts<'acc> {
+        #[account(mut, owner = owner.address())]
+        first: &'acc mut AccountView,
+        #[account(mut, owner = owner.address())]
+        second: &'acc mut AccountView,
+        owner: &'acc AccountView,
+    }
+
+    let program_id = Address::new_from_array([3; 32]);
+    let mut raw = [
+        RuntimeAccount {
+            is_writable: 1,
+            owner: program_id.clone(),
+            ..RuntimeAccount::default()
+        },
+        RuntimeAccount {
+            is_writable: 1,
+            owner: program_id.clone(),
+            ..RuntimeAccount::default()
+        },
+        RuntimeAccount {
+            address: program_id.clone(),
+            ..RuntimeAccount::default()
+        },
+        RuntimeAccount::default(),
+    ];
+    // SAFETY: All headers remain live and declare zero data bytes.
+    let mut accounts = raw
+        .each_mut()
+        .map(|account| unsafe { AccountView::new_unchecked(account) });
+    assert_eq!(
+        Context::<UpdateAccounts<'_>>::try_from_accounts(&program_id, &mut accounts[..2]).err(),
+        Some(ProgramError::NotEnoughAccountKeys),
+    );
+    accounts.swap(1, 3);
+    assert_eq!(
+        Context::<UpdateAccounts<'_>>::try_from_accounts(&program_id, &mut accounts).err(),
+        Some(ProgramError::Immutable),
+    );
+    accounts.swap(1, 3);
+
+    let ctx = Context::<UpdateAccounts<'_>>::try_from_accounts(&program_id, &mut accounts).unwrap();
+    assert_eq!(ctx.accounts.owner.address(), &program_id);
+    ctx.accounts.first.set_lamports(4);
+    ctx.accounts.second.set_lamports(5);
+    assert_eq!(ctx.remaining_accounts.len(), 1);
+    ctx.remaining_accounts[0].set_lamports(6);
+    assert_eq!(accounts.map(|account| account.lamports()), [4, 5, 0, 6]);
+}
+
+#[test]
+fn validates_mutable_views_with_instruction_args() {
+    #[derive(Accounts)]
+    #[instruction(expected_owner: Address)]
+    struct UpdateAccount<'acc> {
+        #[account(mut, owner = expected_owner)]
+        data: &'acc mut AccountView,
+    }
+
+    let program_id = Address::new_from_array([3; 32]);
+    let mut raw = RuntimeAccount {
+        is_writable: 1,
+        owner: program_id.clone(),
+        ..RuntimeAccount::default()
+    };
+    // SAFETY: The header remains live and declares zero data bytes.
+    let mut accounts = [unsafe { AccountView::new_unchecked(&raw mut raw) }];
+    let ctx = Context::<UpdateAccount<'_>>::try_from_accounts_with_args(
+        &program_id,
+        &mut accounts,
+        &program_id,
+    )
+    .unwrap();
+    assert!(ctx.accounts.data.owned_by(&program_id));
+    assert_eq!(
+        Context::<UpdateAccount<'_>>::try_from_accounts_with_args(
+            &program_id,
+            &mut accounts,
+            &Address::default(),
+        )
+        .err(),
+        Some(ProgramError::InvalidAccountOwner),
+    );
+}
+
+#[test]
 fn accepts_caller_defined_errors() {
     struct ReadOnly;
 
@@ -234,6 +322,64 @@ fn context_exposes_canonical_and_explicit_bumps() {
         VaultAccounts::try_accounts(&program_id, &[vault, canonical_reserve, payer]).err(),
         Some(ProgramError::Custom(43)),
     );
+}
+
+#[test]
+fn validates_pda_seeds_and_bump_from_instruction_args() {
+    struct OpenVaultArgs {
+        vault_id: u64,
+        bump: u8,
+    }
+
+    #[derive(Accounts)]
+    #[instruction(args: OpenVaultArgs)]
+    struct OpenVault<'acc> {
+        #[account(seeds = [b"vault", &args.vault_id.to_le_bytes()], bump = args.bump)]
+        vault: &'acc AccountView,
+    }
+
+    let program_id = Address::new_from_array([3; 32]);
+    let vault_id = 12_u64;
+    let (address, bump) =
+        Address::try_find_program_address(&[b"vault", &vault_id.to_le_bytes()], &program_id)
+            .unwrap();
+    let mut raw = [
+        RuntimeAccount {
+            address,
+            ..RuntimeAccount::default()
+        },
+        RuntimeAccount::default(),
+    ];
+    // SAFETY: Both headers remain live and declare zero data bytes.
+    let accounts = raw
+        .each_mut()
+        .map(|account| unsafe { AccountView::new_unchecked(account) });
+    let ctx = Context::<OpenVault<'_>>::try_from_accounts_with_args(
+        &program_id,
+        &accounts,
+        &OpenVaultArgs { vault_id, bump },
+    )
+    .unwrap();
+    assert!(core::ptr::eq(ctx.accounts.vault, &accounts[0]));
+    assert_eq!(ctx.bumps.vault, bump);
+    assert_eq!(ctx.remaining_accounts, &accounts[1..]);
+
+    for args in [
+        OpenVaultArgs {
+            vault_id: vault_id + 1,
+            bump,
+        },
+        OpenVaultArgs {
+            vault_id,
+            bump: bump.wrapping_add(1),
+        },
+    ] {
+        assert_eq!(
+            Context::<OpenVault<'_>>::try_from_accounts_with_args(&program_id, &accounts, &args)
+                .err(),
+            Some(ProgramError::InvalidSeeds),
+        );
+    }
 }
 
 #[test]

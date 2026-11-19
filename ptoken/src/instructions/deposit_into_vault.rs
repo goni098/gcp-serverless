@@ -1,13 +1,10 @@
 use bytemuck::{Pod, Zeroable};
 use pinocchio::error::ProgramError;
 use pinocchio::{AccountView, Address, ProgramResult};
-use pinocchio_constraints::{Accounts, Context, ensure_pda};
+use pinocchio_constraints::{Accounts, Context};
 
 use crate::error::{PtokenError, ensure};
 use crate::event::emit;
-use crate::helper::{
-    check_mint, check_token_account, check_vault_state, find_associated_token_address,
-};
 use crate::state::Vault;
 
 pub const DISCRIMINATOR: u8 = 1;
@@ -32,13 +29,37 @@ impl TryFrom<&[u8]> for DepositIntoVaultArgs {
 }
 
 #[derive(Accounts)]
-struct Ctx<'acc> {
+struct DepositIntoVault<'acc> {
     #[account(signer)]
     payer: &'acc AccountView,
+
+    #[mint(program = token_program)]
     mint: &'acc AccountView,
+
+    #[account(mut)]
+    #[token_account(
+        program=token_program,
+        mint=mint,
+        authority=payer
+    )]
     source_token: &'acc AccountView,
-    vault: &'acc AccountView,
+
+    #[account(
+        initialized,
+        seeds = [Vault::SEED, payer.address().as_ref(), mint.address().as_ref()],
+        bump
+    )]
+    _vault: &'acc AccountView,
+
+    #[account(mut)]
+    #[associated_token(
+        program = token_program,
+        mint = mint,
+        authority = vault,
+    )]
     vault_token: &'acc AccountView,
+
+    #[program(spl)]
     token_program: &'acc AccountView,
 }
 
@@ -47,47 +68,19 @@ pub fn process(
     accounts: &[AccountView],
     args: DepositIntoVaultArgs,
 ) -> ProgramResult {
-    let Ctx {
-        payer,
-        source_token,
-        vault,
-        vault_token,
-        mint,
-        token_program,
-    } = Context::<Ctx<'_>>::try_from_accounts(program_id, accounts)?.accounts;
+    let ctx = Context::<DepositIntoVault<'_>>::try_from_accounts(program_id, accounts)?;
 
-    let token_program_id = token_program.address();
-    let vault_token_address =
-        find_associated_token_address(vault.address(), mint.address(), token_program_id)?;
-    check_mint(mint, token_program)?;
-    pinocchio_constraints::ensure_writable(source_token)
-        .map_err(|_| PtokenError::AccountNotWritable)?;
-    check_token_account(source_token, token_program, payer, mint)?;
-
-    pinocchio_constraints::ensure_writable(vault_token)
-        .map_err(|_| PtokenError::AccountNotWritable)?;
-    ensure!(
-        vault_token.address() == &vault_token_address,
-        PtokenError::InvalidTokenVaultAddress
-    );
-    check_token_account(vault_token, token_program, vault, mint)?;
-
-    ensure!(vault.owned_by(program_id), PtokenError::InvalidVaultStateOwner);
-    ensure_pda(
-        vault,
-        program_id,
-        &[Vault::SEED, payer.address().as_ref(), mint.address().as_ref()],
-        None,
+    pinocchio_token::instructions::Transfer::new(
+        ctx.accounts.source_token,
+        ctx.accounts.vault_token,
+        ctx.accounts.payer,
+        args.amount,
     )
-    .map_err(|_| PtokenError::InvalidVaultStateAddress)?;
-    check_vault_state(vault, payer, mint, vault_token, token_program_id)?;
-
-    pinocchio_token::instructions::Transfer::new(source_token, vault_token, payer, args.amount)
-        .invoke_with_program(token_program_id)?;
+    .invoke_with_program(ctx.accounts.token_program.address())?;
 
     emit!(VaultDeposited {
-        caller: payer.address().to_bytes(),
-        mint: mint.address().to_bytes(),
+        caller: ctx.accounts.payer.address().to_bytes(),
+        mint: ctx.accounts.mint.address().to_bytes(),
         amount: args.amount
     });
 

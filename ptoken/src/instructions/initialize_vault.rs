@@ -4,9 +4,8 @@ use pinocchio::error::ProgramError;
 use pinocchio::{AccountView, Address, ProgramResult};
 use pinocchio_constraints::{Accounts, Context};
 
-use crate::error::{PtokenError, ensure};
+use crate::error::ensure;
 use crate::event::emit;
-use crate::helper::find_associated_token_address;
 use crate::state::Vault;
 
 pub const DISCRIMINATOR: u8 = 0;
@@ -34,11 +33,11 @@ struct InitializeVault<'acc> {
 
     #[account(
         mut,
-        initialized,
+        uninitialized,
         seeds = [Vault::SEED, payer.address().as_ref(), mint.address().as_ref()],
         bump
     )]
-    vault: &'acc AccountView,
+    vault: &'acc mut AccountView,
 
     #[account(mut)]
     #[associated_token(
@@ -48,8 +47,10 @@ struct InitializeVault<'acc> {
     )]
     vault_token: &'acc AccountView,
 
+    // The runtime requires this program account in the caller's accounts for the CPI.
+    // pinocchio_associated_token_account::instructions::CreateIdempotent uses the program ID directly.
     #[program(id = pinocchio_associated_token_account::ID)]
-    associated_token_program: &'acc AccountView,
+    _associated_token_program: &'acc AccountView,
 
     #[program(spl)]
     token_program: &'acc AccountView,
@@ -75,14 +76,6 @@ pub fn process(
         ..
     } = ctx.accounts;
 
-    ensure!(vault.data_len() == 0, PtokenError::VaultAlreadyInitialized);
-    let vault_token_address =
-        find_associated_token_address(vault.address(), mint.address(), token_program.address())?;
-    ensure!(
-        vault_token.address() == &vault_token_address,
-        PtokenError::InvalidVaultTokenAddress
-    );
-
     let bump = [ctx.bumps.vault];
     let seeds = [
         Seed::from(Vault::SEED),
@@ -91,10 +84,8 @@ pub fn process(
         Seed::from(&bump),
     ];
 
-    // The derived context borrows shared views. A cloned view shares the runtime account.
-    let mut vault = vault.clone();
     pinocchio_system::create_account_with_minimum_balance_signed(
-        &mut vault,
+        vault,
         Vault::LEN,
         program_id,
         payer,
@@ -105,7 +96,7 @@ pub fn process(
     pinocchio_associated_token_account::instructions::CreateIdempotent {
         funding_account: payer,
         account: vault_token,
-        wallet: &vault,
+        wallet: vault,
         mint,
         system_program,
         token_program,

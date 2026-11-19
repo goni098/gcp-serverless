@@ -2,14 +2,10 @@ use bytemuck::{Pod, Zeroable};
 use pinocchio::cpi::{Seed, Signer};
 use pinocchio::error::ProgramError;
 use pinocchio::{AccountView, Address, ProgramResult};
-use pinocchio_constraints::{Accounts, Context, ensure_writable};
-use pinocchio_token::instructions::TransferChecked;
+use pinocchio_constraints::{Accounts, Context};
 
 use crate::error::{PtokenError, ensure};
 use crate::event::emit;
-use crate::helper::{
-    check_mint, check_token_account, check_vault_state, find_associated_token_address,
-};
 use crate::state::Vault;
 
 pub const DISCRIMINATOR: u8 = 2;
@@ -32,19 +28,33 @@ impl TryFrom<&[u8]> for WithdrawFromVaultArgs {
 }
 
 #[derive(Accounts)]
-struct Ctx<'account> {
+struct WithdrawFromVault<'acc> {
     #[account(signer)]
-    authority: &'account AccountView,
-    #[account(mut @ PtokenError::AccountNotWritable)]
-    vault: &'account AccountView,
-    destination: &'account AccountView,
-    mint: &'account AccountView,
-    token_program: &'account AccountView,
+    payer: &'acc AccountView,
+
+    #[mint(program=token_program)]
+    mint: &'acc AccountView,
+
     #[account(
-        seeds = [Vault::SEED, authority.address().as_ref(), mint.address().as_ref()],
-        bump @ PtokenError::InvalidVaultStateAddress,
+        initialized,
+        seeds = [Vault::SEED, payer.address().as_ref(), mint.address().as_ref()],
+        bump
     )]
-    vault_state: &'account AccountView,
+    vault: &'acc AccountView,
+
+    #[account(mut)]
+    #[associated_token(
+        program = token_program,
+        mint = mint,
+        authority = vault,
+    )]
+    vault_token: &'acc AccountView,
+
+    #[account(mut)]
+    destination: &'acc AccountView,
+
+    #[program(spl)]
+    token_program: &'acc AccountView,
 }
 
 pub fn process(
@@ -52,53 +62,31 @@ pub fn process(
     accounts: &[AccountView],
     args: WithdrawFromVaultArgs,
 ) -> ProgramResult {
-    let ctx = Context::<Ctx<'_>>::try_from_accounts(program_id, accounts)?;
-    let Ctx {
-        authority,
-        vault,
-        destination,
-        mint,
-        token_program,
-        vault_state,
-    } = ctx.accounts;
+    let ctx = Context::<WithdrawFromVault<'_>>::try_from_accounts(program_id, accounts)?;
 
-    let token_program_id = token_program.address();
-    let vault_address =
-        find_associated_token_address(vault_state.address(), mint.address(), token_program_id)?;
-    ensure!(
-        vault.address() == &vault_address,
-        PtokenError::InvalidTokenVaultAddress
-    );
-    check_token_account(vault, token_program, vault_state, mint)?;
-
-    ensure_writable(destination).map_err(|_| PtokenError::AccountNotWritable)?;
-    ensure!(
-        destination.address() != vault.address(),
-        PtokenError::WithdrawalDestinationIsVault
-    );
-    check_token_account(destination, token_program, authority, mint)?;
-    let decimals = check_mint(mint, token_program)?;
-
-    ensure!(
-        vault_state.owned_by(program_id),
-        PtokenError::InvalidVaultStateOwner
-    );
-    check_vault_state(vault_state, authority, mint, vault, token_program_id)?;
-
-    let bump = [ctx.bumps.vault_state];
+    let bump = [ctx.bumps.vault];
     let seeds = [
         Seed::from(Vault::SEED),
-        Seed::from(authority.address().as_ref()),
-        Seed::from(mint.address().as_ref()),
+        Seed::from(ctx.accounts.payer.address().as_ref()),
+        Seed::from(ctx.accounts.mint.address().as_ref()),
         Seed::from(&bump),
     ];
-    TransferChecked::new(vault, mint, destination, vault_state, args.amount, decimals)
-        .invoke_signed_with_program(&[Signer::from(&seeds)], token_program_id)?;
+
+    pinocchio_token::instructions::Transfer::new(
+        ctx.accounts.vault_token,
+        ctx.accounts.destination,
+        ctx.accounts.vault,
+        args.amount,
+    )
+    .invoke_signed_with_program(
+        &[Signer::from(&seeds)],
+        ctx.accounts.token_program.address(),
+    )?;
 
     emit!(VaultWithdrawn {
-        caller: *authority.address().as_array(),
-        mint: *mint.address().as_array(),
-        destination: *destination.address().as_array(),
+        caller: ctx.accounts.payer.address().to_bytes(),
+        mint: ctx.accounts.mint.address().to_bytes(),
+        destination: ctx.accounts.destination.address().to_bytes(),
         amount: args.amount
     });
 

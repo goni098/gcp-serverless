@@ -79,6 +79,15 @@ fn checks_associated_token_accounts_for_both_programs() {
         token_program: &'acc AccountView,
     }
 
+    #[derive(Accounts)]
+    struct AssociatedAccountsAllowUninitialized<'acc> {
+        #[associated_token(program = _token_program, mint = _mint, authority = _wallet, allow_uninitialized)]
+        ata: &'acc AccountView,
+        _mint: &'acc AccountView,
+        _wallet: &'acc AccountView,
+        _token_program: &'acc AccountView,
+    }
+
     const MINT: Address = Address::new_from_array([1; 32]);
     const WALLET: Address = Address::new_from_array([2; 32]);
     const TOKEN_LEN: usize = pinocchio_token::state::Account::LEN;
@@ -148,9 +157,9 @@ fn checks_associated_token_accounts_for_both_programs() {
         assert_eq!(parsed.mint.address(), &MINT);
         assert_eq!(parsed.wallet.address(), &WALLET);
         assert!(parsed.ata.owned_by(parsed.token_program.address()));
+        let mut noncanonical_accounts = [noncanonical, mint, wallet, program];
         assert_eq!(
-            AssociatedAccounts::try_accounts(&program_id, &[noncanonical, mint, wallet, program])
-                .err(),
+            AssociatedAccounts::try_accounts(&program_id, &noncanonical_accounts).err(),
             Some(ProgramError::InvalidSeeds),
         );
         canonical.try_borrow_mut().unwrap()[0] = 7;
@@ -163,6 +172,29 @@ fn checks_associated_token_accounts_for_both_programs() {
         assert_eq!(
             AssociatedAccounts::try_accounts(&program_id, &accounts).err(),
             Some(ProgramError::InvalidAccountData)
+        );
+
+        canonical.try_borrow_mut().unwrap()[32] = 2;
+        let uninitialized = pinocchio_token::state::AccountState::Uninitialized.into();
+        canonical.try_borrow_mut().unwrap()[108] = uninitialized;
+        assert_eq!(
+            AssociatedAccounts::try_accounts(&program_id, &accounts).err(),
+            Some(ProgramError::UninitializedAccount),
+        );
+        let (parsed, (), _) =
+            AssociatedAccountsAllowUninitialized::try_accounts(&program_id, &accounts).unwrap();
+        assert_eq!(parsed.ata.address(), &address);
+
+        noncanonical_accounts[0].try_borrow_mut().unwrap()[108] = uninitialized;
+        assert_eq!(
+            AssociatedAccountsAllowUninitialized::try_accounts(&program_id, &noncanonical_accounts)
+                .err(),
+            Some(ProgramError::InvalidSeeds),
+        );
+        canonical.try_borrow_mut().unwrap()[0] = 7;
+        assert_eq!(
+            AssociatedAccountsAllowUninitialized::try_accounts(&program_id, &accounts).err(),
+            Some(ProgramError::InvalidAccountData),
         );
     }
 }

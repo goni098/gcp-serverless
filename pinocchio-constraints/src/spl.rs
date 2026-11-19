@@ -4,7 +4,8 @@
 //! the program, account ownership, and data layout. Both require initialization
 //! by default and accept `allow_uninitialized` to skip that requirement. See
 //! [`ensure_mint_constraints`] and [`ensure_token_account`] for the default errors.
-//! `#[associated_token(...)]` also checks the canonical associated token address.
+//! `#[associated_token(...)]` supports the same flag and also checks the canonical
+//! associated token address.
 //!
 //! ```
 //! use pinocchio_constraints::{AccountView, Accounts};
@@ -187,7 +188,26 @@ pub fn ensure_associated_token(
     mint: &AccountView,
     authority: &AccountView,
 ) -> ProgramResult {
-    ensure_token_account(account, token_program, Some(authority), Some(mint))?;
+    validate_associated_token(account, token_program, mint, authority, false)
+}
+
+/// Validate a canonical associated token account with an optional initialization requirement.
+/// The token program owner, data layout, mint, and authority are checked in either mode.
+/// See [`ensure_associated_token`] for the errors when initialization is required.
+pub fn validate_associated_token(
+    account: &AccountView,
+    token_program: &AccountView,
+    mint: &AccountView,
+    authority: &AccountView,
+    allow_uninitialized: bool,
+) -> ProgramResult {
+    validate_token_account(
+        account,
+        token_program,
+        Some(authority),
+        Some(mint),
+        allow_uninitialized,
+    )?;
     crate::ensure_pda(
         account,
         &pinocchio_associated_token_account::ID,

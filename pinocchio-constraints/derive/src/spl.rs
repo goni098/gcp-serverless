@@ -65,12 +65,10 @@ pub(super) fn expand(
             "mint" if !is_mint => &mut mint,
             "authority" => &mut authority,
             "freeze_authority" if is_mint => &mut freeze_authority,
-            "allow_uninitialized" if !is_associated => &mut allow_uninitialized,
+            "allow_uninitialized" => &mut allow_uninitialized,
             _ => {
                 let message = if is_mint {
                     "expected `program`, `decimals`, `authority`, `freeze_authority`, or `allow_uninitialized`"
-                } else if is_associated {
-                    "expected `program`, `mint`, or `authority`"
                 } else {
                     "expected `program`, `mint`, `authority`, or `allow_uninitialized`"
                 };
@@ -104,7 +102,9 @@ pub(super) fn expand(
     } else if is_associated {
         let mint = mint.ok_or_else(|| missing_argument("mint"))?;
         let authority = authority.ok_or_else(|| missing_argument("authority"))?;
-        quote!(#runtime::spl::ensure_associated_token(#field, #program, #mint, #authority))
+        quote!(#runtime::spl::validate_associated_token(
+            #field, #program, #mint, #authority, #allow_uninitialized
+        ))
     } else {
         let authority = optional(authority);
         let mint = optional(mint);

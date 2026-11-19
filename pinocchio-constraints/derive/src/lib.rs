@@ -14,7 +14,7 @@ mod spl;
 /// Bind accounts in struct field order and validate each field's constraints.
 #[proc_macro_derive(
     Accounts,
-    attributes(account, program, mint, token_account, associated_token)
+    attributes(account, program, mint, token_account, associated_token, instruction)
 )]
 pub fn derive_accounts(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -224,7 +224,42 @@ fn with_custom_error(check: Tokens, error: Option<&Expr>, runtime: &Tokens) -> T
     }
 }
 
+struct InstructionArg {
+    name: Ident,
+    ty: Type,
+}
+
+impl Parse for InstructionArg {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let name = input.parse()?;
+        input.parse::<Token![:]>()?;
+        let ty = input.parse()?;
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+        }
+        if !input.is_empty() {
+            return Err(input.error("expected one `name: Type` instruction argument binding"));
+        }
+        Ok(Self { name, ty })
+    }
+}
+
 fn expand(input: DeriveInput) -> Result<Tokens> {
+    let mut instruction_arg = None;
+    for attribute in input
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("instruction"))
+    {
+        if instruction_arg.is_some() {
+            return Err(Error::new_spanned(
+                attribute,
+                "duplicate `#[instruction(...)]`",
+            ));
+        }
+        instruction_arg = Some(attribute.parse_args::<InstructionArg>()?);
+    }
+
     let name = input.ident;
     let visibility = input.vis;
     let Data::Struct(data) = input.data else {
@@ -246,8 +281,10 @@ fn expand(input: DeriveInput) -> Result<Tokens> {
     let program_id = Ident::new("__program_id", Span::mixed_site());
     let accounts = Ident::new("__accounts", Span::mixed_site());
     let remaining_accounts = Ident::new("__remaining_accounts", Span::mixed_site());
+    let validated_bumps = Ident::new("__validated_bumps", Span::mixed_site());
 
     let mut bindings = Vec::with_capacity(fields.named.len());
+    let mut requires_mut = false;
     let mut checks = Vec::new();
     let mut bump_fields = Vec::new();
     let mut bump_initializers = Vec::new();
@@ -255,17 +292,36 @@ fn expand(input: DeriveInput) -> Result<Tokens> {
         let Type::Reference(reference) = &field.ty else {
             return Err(Error::new_spanned(
                 field.ty,
-                "expected a shared AccountView reference",
+                "expected an AccountView reference",
             ));
         };
-        if reference.mutability.is_some() || reference.lifetime.as_ref() != Some(lifetime) {
+        if reference.lifetime.as_ref() != Some(lifetime) {
             return Err(Error::new_spanned(
                 field.ty,
-                "expected a shared reference with the account lifetime",
+                "expected a reference with the account lifetime",
             ));
         }
+        requires_mut |= reference.mutability.is_some();
 
         let field_name = field.ident.expect("named struct field");
+        if let Some(attribute) = field
+            .attrs
+            .iter()
+            .find(|attr| attr.path().is_ident("instruction"))
+        {
+            return Err(Error::new_spanned(
+                attribute,
+                "place `#[instruction(...)]` on the accounts struct",
+            ));
+        }
+        if let Some(arg) = &instruction_arg
+            && arg.name.unraw() == field_name.unraw()
+        {
+            return Err(Error::new(
+                arg.name.span(),
+                "instruction argument binding conflicts with an account field",
+            ));
+        }
         let constraints = parse_constraints(&field.attrs, &field_name, &runtime)?;
         let seeds = constraints
             .iter()
@@ -368,20 +424,63 @@ fn expand(input: DeriveInput) -> Result<Tokens> {
         )
     };
 
+    let (slice_mutability, shared_reborrows) = if requires_mut {
+        // Slice matching binds each view mutably. Expose shared views to constraint
+        // expressions until their checks finish, then use the original bindings.
+        (quote!(mut), quote!(#(let #bindings = &*#bindings;)*))
+    } else {
+        (quote!(), quote!())
+    };
+    let account_slice = quote!(&#lifetime #slice_mutability [#runtime::AccountView]);
+    let uses_args_trait = requires_mut || instruction_arg.is_some();
+    let (accounts_trait, method, slice_type) = if uses_args_trait {
+        (
+            quote!(AccountsWithArgs),
+            quote!(try_accounts_with_args),
+            quote!(type AccountSlice = #account_slice;),
+        )
+    } else {
+        (quote!(Accounts), quote!(try_accounts), quote!())
+    };
+    let without_args_impl = (requires_mut && instruction_arg.is_none()).then(|| {
+        quote!(impl #impl_generics #runtime::AccountsWithoutArgs<#lifetime> for #name #type_generics #where_clause {})
+    });
+    let (args_type, args_parameter) = match instruction_arg {
+        Some(InstructionArg { name, ty }) => (
+            quote!(type Args = #ty;),
+            quote!(#[allow(unused_variables)] #name: &Self::Args,),
+        ),
+        None if requires_mut => (
+            quote!(
+                type Args = ();
+            ),
+            quote!(_: &Self::Args,),
+        ),
+        None => (quote!(), quote!()),
+    };
+
     Ok(quote! {
         #bumps_item
-        impl #impl_generics #runtime::Accounts<#lifetime> for #name #type_generics #where_clause {
+        #without_args_impl
+        impl #impl_generics #runtime::#accounts_trait<#lifetime> for #name #type_generics #where_clause {
+            #slice_type
+            #args_type
             type Bumps = #bumps_type;
 
-            fn try_accounts(
+            fn #method(
                 #program_id: &#runtime::Address,
-                #accounts: &#lifetime [#runtime::AccountView],
-            ) -> ::core::result::Result<(Self, Self::Bumps, &#lifetime [#runtime::AccountView]), #runtime::ProgramError> {
+                #accounts: #account_slice,
+                #args_parameter
+            ) -> ::core::result::Result<(Self, Self::Bumps, #account_slice), #runtime::ProgramError> {
                 let [#(#bindings,)* #remaining_accounts @ ..] = #accounts else {
                     return ::core::result::Result::Err(#runtime::ProgramError::NotEnoughAccountKeys);
                 };
-                #(#checks)*
-                ::core::result::Result::Ok((Self { #(#bindings),* }, #bumps_value, #remaining_accounts))
+                let #validated_bumps = {
+                    #shared_reborrows
+                    #(#checks)*
+                    #bumps_value
+                };
+                ::core::result::Result::Ok((Self { #(#bindings),* }, #validated_bumps, #remaining_accounts))
             }
         }
     })

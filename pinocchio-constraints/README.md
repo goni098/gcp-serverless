@@ -41,6 +41,60 @@ fn process(program_id: &Address, accounts: &[AccountView]) -> Result<(), Program
 
 The client passes `[payer, vault, system_program]` in that order, then any extra accounts. The derive binds one `&AccountView` per field in declaration order before checking constraints, so a constraint can refer to a field declared later. If the slice has fewer entries than declared fields, binding returns `ProgramError::NotEnoughAccountKeys`. Extra accounts are passed to the handler in `ctx.remaining_accounts` in their original order.
 
+### Mutable account views
+
+Mix `&'acc mut AccountView` and `&'acc AccountView` fields in the same struct. Pass a mutable account slice to `Context::try_from_accounts` when any field is mutable. Use `Context::try_from_accounts_with_args` if the struct declares `#[instruction(...)]`.
+
+```rust
+use pinocchio_constraints::{AccountView, Accounts, Address, Context, ProgramError};
+
+#[derive(Accounts)]
+struct UpdateVault<'acc> {
+    #[account(mut, owner = program.address())]
+    vault: &'acc mut AccountView,
+    program: &'acc AccountView,
+}
+
+fn process(program_id: &Address, accounts: &mut [AccountView]) -> Result<(), ProgramError> {
+    let ctx = Context::<UpdateVault<'_>>::try_from_accounts(program_id, accounts)?;
+    let _vault_data = ctx.accounts.vault.try_borrow_mut()?;
+    Ok(())
+}
+```
+
+Constraints see shared references during validation. `#[account(mut)]` checks Solana's writable flag. A mutable reference provides exclusive access to its slice element, and duplicate views can still refer to the same runtime account. With mutable fields, `ctx.remaining_accounts` is also mutable.
+
+### Instruction arguments
+
+Use `#[instruction(args: ArgsType)]` to make a decoded instruction argument available by reference in constraint expressions. The attribute declares one binding, so use an args struct for instructions with multiple values. Decode the instruction payload in your usual dispatch and pass the decoded value to `try_from_accounts_with_args`.
+
+```rust
+use pinocchio_constraints::{AccountView, Accounts, Address, Context, ProgramError};
+
+struct OpenVaultArgs {
+    vault_id: u64,
+}
+
+#[derive(Accounts)]
+#[instruction(args: OpenVaultArgs)]
+struct OpenVault<'acc> {
+    #[account(seeds = [b"vault", &args.vault_id.to_le_bytes()], bump)]
+    vault: &'acc AccountView,
+}
+
+fn process(
+    program_id: &Address,
+    accounts: &[AccountView],
+    args: OpenVaultArgs,
+) -> Result<(), ProgramError> {
+    let ctx = Context::<OpenVault<'_>>::try_from_accounts_with_args(program_id, accounts, &args)?;
+    let vault = ctx.accounts.vault;
+    Ok(())
+}
+```
+
+Accounts structs without `#[instruction(...)]` continue to use `try_from_accounts`.
+
 ## Account constraints
 
 | Constraint | What it validates | Default `ProgramError` |
@@ -157,19 +211,21 @@ struct WalletTokenAccounts<'acc> {
 }
 ```
 
-The constraint validates the token layout, accepts the `Initialized` and `Frozen` states, matches the stored mint and owner authority, and checks the canonical PDA under the Associated Token Account program. The seeds are the authority address, token program ID, and mint address, in that order. The mint argument supplies the address for these checks. Use `#[mint(program = token_program)]` on the mint field to validate its data as well.
+The constraint validates the token layout, accepts the `Initialized` and `Frozen` states by default, matches the stored mint and owner authority, and checks the canonical PDA under the Associated Token Account program. The seeds are the authority address, token program ID, and mint address, in that order. The mint argument supplies the address for these checks. Use `#[mint(program = token_program)]` on the mint field to validate its data as well.
+
+Add `allow_uninitialized` to also accept the `Uninitialized` state. This still requires a token-program-owned account with a valid layout, matching mint and authority, and the canonical address. A fresh address awaiting `CreateIdempotent` fails the account ownership or layout check.
 
 | Default `ProgramError` | When it occurs |
 | --- | --- |
 | `IncorrectProgramId` | The token program is unsupported or non-executable, or the token account's runtime owner differs from the token program ID. |
 | `AccountBorrowFailed` | The token account data cannot be borrowed. |
 | `InvalidAccountData` | The token account layout or state byte is invalid, or the stored mint or owner authority differs from the expected address. |
-| `UninitializedAccount` | The token account's stored state is `Uninitialized`. |
+| `UninitializedAccount` | The token account's stored state is `Uninitialized` and `allow_uninitialized` is absent. |
 | `InvalidSeeds` | PDA derivation fails or the account address differs from the canonical associated token address. |
 
 ## Compile-time checks
 
-- Derive `Accounts` on a named struct with one account lifetime and shared `&AccountView` fields.
+- Derive `Accounts` on a named struct with one account lifetime and shared or mutable `AccountView` references.
 - Use at most one of `#[program(...)]`, `#[mint(...)]`, `#[token_account(...)]`, and `#[associated_token(...)]` per field. Combine it with general `#[account(...)]` constraints as needed.
 - Pair `seeds` with `bump`, and choose at most one of `initialized` and `uninitialized` per field.
 - Supply known, unique constraints and arguments. SPL attributes require the `spl` feature and a `program` argument.
