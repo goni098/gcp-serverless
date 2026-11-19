@@ -14,9 +14,13 @@ struct Argument {
 
 impl Parse for Argument {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
-        let name = input.parse()?;
-        input.parse::<Token![=]>()?;
-        let value = input.parse()?;
+        let name: Ident = input.parse()?;
+        let value = if name == "allow_uninitialized" {
+            syn::parse_quote!(true)
+        } else {
+            input.parse::<Token![=]>()?;
+            input.parse()?
+        };
         let error = parse_custom_error(input)?;
         Ok(Self { name, value, error })
     }
@@ -34,17 +38,15 @@ pub(super) fn expand(
         ));
     }
 
-    let is_mint = attribute.path().is_ident("mint");
-    let missing_program = || {
-        let message = if is_mint {
-            "`mint` requires `program = …`"
-        } else {
-            "`token_account` requires `program = …`"
-        };
-        Error::new_spanned(attribute.path(), message)
+    let path = attribute.path();
+    let is_mint = path.is_ident("mint");
+    let is_associated = path.is_ident("associated_token");
+    let missing_argument = |argument| {
+        let name = path.get_ident().expect("SPL attribute has a single name");
+        Error::new_spanned(path, format!("`{name}` requires `{argument} = …`"))
     };
     if matches!(&attribute.meta, Meta::Path(_)) {
-        return Err(missing_program());
+        return Err(missing_argument("program"));
     }
 
     let mut program = None;
@@ -52,6 +54,7 @@ pub(super) fn expand(
     let mut mint = None;
     let mut authority = None;
     let mut freeze_authority = None;
+    let mut allow_uninitialized = None;
     let mut error = None;
     for argument in
         attribute.parse_args_with(Punctuated::<Argument, Token![,]>::parse_terminated)?
@@ -62,11 +65,14 @@ pub(super) fn expand(
             "mint" if !is_mint => &mut mint,
             "authority" => &mut authority,
             "freeze_authority" if is_mint => &mut freeze_authority,
+            "allow_uninitialized" if !is_associated => &mut allow_uninitialized,
             _ => {
                 let message = if is_mint {
-                    "expected `program`, `decimals`, `authority`, or `freeze_authority`"
-                } else {
+                    "expected `program`, `decimals`, `authority`, `freeze_authority`, or `allow_uninitialized`"
+                } else if is_associated {
                     "expected `program`, `mint`, or `authority`"
+                } else {
+                    "expected `program`, `mint`, `authority`, or `allow_uninitialized`"
                 };
                 return Err(Error::new(argument.name.span(), message));
             }
@@ -86,17 +92,25 @@ pub(super) fn expand(
         }
     }
 
-    let program = program.ok_or_else(missing_program)?;
-    let authority = optional(authority);
+    let program = program.ok_or_else(|| missing_argument("program"))?;
+    let allow_uninitialized = allow_uninitialized.is_some();
     let check = if is_mint {
         let decimals = optional(decimals);
+        let authority = optional(authority);
         let freeze_authority = optional(freeze_authority);
-        quote!(#runtime::spl::ensure_mint_constraints(
-            #field, #program, #decimals, #authority, #freeze_authority
+        quote!(#runtime::spl::validate_mint(
+            #field, #program, #decimals, #authority, #freeze_authority, #allow_uninitialized
         ))
+    } else if is_associated {
+        let mint = mint.ok_or_else(|| missing_argument("mint"))?;
+        let authority = authority.ok_or_else(|| missing_argument("authority"))?;
+        quote!(#runtime::spl::ensure_associated_token(#field, #program, #mint, #authority))
     } else {
+        let authority = optional(authority);
         let mint = optional(mint);
-        quote!(#runtime::spl::ensure_token_account(#field, #program, #authority, #mint))
+        quote!(#runtime::spl::validate_token_account(
+            #field, #program, #authority, #mint, #allow_uninitialized
+        ))
     };
     let check = with_custom_error(check, error.as_ref(), runtime);
     Ok(quote!(#check;))
@@ -117,6 +131,31 @@ mod tests {
         for attribute in attributes {
             let error = expand(&attribute, &parse_quote!(mint), &quote!(runtime)).unwrap_err();
             assert_eq!(error.to_string(), "`mint` requires `program = …`");
+        }
+    }
+
+    #[test]
+    fn associated_token_requires_program_mint_and_authority() {
+        let cases: [(Attribute, &str); 3] = [
+            (
+                parse_quote!(#[associated_token(mint = mint, authority = payer)]),
+                "program",
+            ),
+            (
+                parse_quote!(#[associated_token(program = token_program, authority = payer)]),
+                "mint",
+            ),
+            (
+                parse_quote!(#[associated_token(program = token_program, mint = mint)]),
+                "authority",
+            ),
+        ];
+        for (attribute, argument) in cases {
+            let error = expand(&attribute, &parse_quote!(ata), &quote!(runtime)).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("`associated_token` requires `{argument} = …`")
+            );
         }
     }
 }

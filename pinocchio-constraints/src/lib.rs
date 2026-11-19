@@ -12,7 +12,7 @@
 //! requires zero lamports. Both flags check only the account balance.
 //!
 //! Enable the optional `spl` feature for `#[program(spl)]`, mint constraints,
-//! and token account constraints.
+//! and token account constraints, including `#[associated_token(...)]`.
 //!
 //! ```
 //! use pinocchio_constraints::{AccountView, Accounts, Address, Context, ProgramError};

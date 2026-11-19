@@ -69,6 +69,188 @@ struct AccountWithData<const LEN: usize> {
 }
 
 #[test]
+fn checks_associated_token_accounts_for_both_programs() {
+    #[derive(Accounts)]
+    struct AssociatedAccounts<'acc> {
+        #[associated_token(program = token_program, mint = mint, authority = wallet)]
+        ata: &'acc AccountView,
+        mint: &'acc AccountView,
+        wallet: &'acc AccountView,
+        token_program: &'acc AccountView,
+    }
+
+    const MINT: Address = Address::new_from_array([1; 32]);
+    const WALLET: Address = Address::new_from_array([2; 32]);
+    const TOKEN_LEN: usize = pinocchio_token::state::Account::LEN;
+    let program_id = Address::new_from_array([9; 32]);
+    for token_program in [pinocchio_token::ID, pinocchio_token_2022::ID] {
+        let (address, _) = Address::try_find_program_address(
+            &[WALLET.as_ref(), token_program.as_ref(), MINT.as_ref()],
+            &pinocchio_associated_token_account::ID,
+        )
+        .unwrap();
+        let mut data = [0; TOKEN_LEN];
+        data[..32].copy_from_slice(MINT.as_ref());
+        data[32..64].copy_from_slice(WALLET.as_ref());
+        data[108] = pinocchio_token::state::AccountState::Initialized.into();
+        let header = RuntimeAccount {
+            address: address.clone(),
+            owner: token_program.clone(),
+            borrow_state: NOT_BORROWED,
+            data_len: TOKEN_LEN as u64,
+            ..RuntimeAccount::default()
+        };
+        let mut canonical = AccountWithData {
+            header: header.clone(),
+            data,
+        };
+        let mut noncanonical = AccountWithData {
+            header: RuntimeAccount {
+                address: [3; 32].into(),
+                ..header
+            },
+            data,
+        };
+        let mut references = [
+            RuntimeAccount {
+                address: MINT,
+                ..RuntimeAccount::default()
+            },
+            RuntimeAccount {
+                address: WALLET,
+                ..RuntimeAccount::default()
+            },
+            RuntimeAccount {
+                address: token_program,
+                executable: 1,
+                ..RuntimeAccount::default()
+            },
+        ];
+        // SAFETY: All headers remain live and are followed by their declared data.
+        let [mint, wallet, program] = references
+            .each_mut()
+            .map(|header| unsafe { AccountView::new_unchecked(header) });
+        // SAFETY: The account headers remain live and are followed by their declared data.
+        let (mut canonical, noncanonical) = unsafe {
+            (
+                AccountView::new_unchecked((&raw mut canonical).cast()),
+                AccountView::new_unchecked((&raw mut noncanonical).cast()),
+            )
+        };
+        let accounts = [
+            canonical.clone(),
+            mint.clone(),
+            wallet.clone(),
+            program.clone(),
+        ];
+        let (parsed, (), _) = AssociatedAccounts::try_accounts(&program_id, &accounts).unwrap();
+        assert_eq!(parsed.ata.address(), &address);
+        assert_eq!(parsed.mint.address(), &MINT);
+        assert_eq!(parsed.wallet.address(), &WALLET);
+        assert!(parsed.ata.owned_by(parsed.token_program.address()));
+        assert_eq!(
+            AssociatedAccounts::try_accounts(&program_id, &[noncanonical, mint, wallet, program])
+                .err(),
+            Some(ProgramError::InvalidSeeds),
+        );
+        canonical.try_borrow_mut().unwrap()[0] = 7;
+        assert_eq!(
+            AssociatedAccounts::try_accounts(&program_id, &accounts).err(),
+            Some(ProgramError::InvalidAccountData)
+        );
+        canonical.try_borrow_mut().unwrap()[0] = 1;
+        canonical.try_borrow_mut().unwrap()[32] = 7;
+        assert_eq!(
+            AssociatedAccounts::try_accounts(&program_id, &accounts).err(),
+            Some(ProgramError::InvalidAccountData)
+        );
+    }
+}
+
+#[test]
+fn allows_uninitialized_spl_accounts_when_requested() {
+    #[derive(Accounts)]
+    struct InitializeAccounts<'acc> {
+        #[mint(program = token_program, allow_uninitialized, decimals = 0)]
+        mint: &'acc AccountView,
+        #[token_account(program = token_program, allow_uninitialized, mint = mint)]
+        token: &'acc AccountView,
+        token_program: &'acc AccountView,
+    }
+
+    const MINT_LEN: usize = pinocchio_token::state::Mint::LEN;
+    const TOKEN_LEN: usize = pinocchio_token::state::Account::LEN;
+    const MINT_ID: Address = Address::new_from_array([1; 32]);
+    let program_id = Address::new_from_array([9; 32]);
+    for id in [pinocchio_token::ID, pinocchio_token_2022::ID] {
+        let header = RuntimeAccount {
+            owner: id.clone(),
+            borrow_state: NOT_BORROWED,
+            ..RuntimeAccount::default()
+        };
+        let mut raw_mint = AccountWithData {
+            header: RuntimeAccount {
+                address: MINT_ID,
+                data_len: MINT_LEN as u64,
+                ..header.clone()
+            },
+            data: [0; MINT_LEN],
+        };
+        let mut raw_token = AccountWithData {
+            header: RuntimeAccount {
+                address: [2; 32].into(),
+                data_len: TOKEN_LEN as u64,
+                ..header
+            },
+            data: [0; TOKEN_LEN],
+        };
+        raw_token.data[..32].copy_from_slice(MINT_ID.as_ref());
+        let mut raw_program = RuntimeAccount {
+            address: id,
+            executable: 1,
+            ..RuntimeAccount::default()
+        };
+        // SAFETY: All headers remain live and are followed by their declared data.
+        let (mut mint, mut token, program) = unsafe {
+            (
+                AccountView::new_unchecked((&raw mut raw_mint).cast()),
+                AccountView::new_unchecked((&raw mut raw_token).cast()),
+                AccountView::new_unchecked(&raw mut raw_program),
+            )
+        };
+        assert_eq!(
+            ensure_mint(&mint, &program, None),
+            Err(ProgramError::UninitializedAccount)
+        );
+        assert_eq!(
+            ensure_token_account(&token, &program, None, None),
+            Err(ProgramError::UninitializedAccount)
+        );
+
+        let accounts = [mint.clone(), token.clone(), program.clone()];
+        let (parsed, (), _) = InitializeAccounts::try_accounts(&program_id, &accounts).unwrap();
+        assert!(parsed.mint.owned_by(parsed.token_program.address()));
+        assert!(parsed.token.owned_by(parsed.token_program.address()));
+
+        mint.try_borrow_mut().unwrap()[44] = 1;
+        assert_eq!(
+            InitializeAccounts::try_accounts(&program_id, &accounts).err(),
+            Some(ProgramError::InvalidAccountData)
+        );
+        mint.try_borrow_mut().unwrap()[44] = 0;
+        token.try_borrow_mut().unwrap()[108] = 3;
+        assert_eq!(
+            InitializeAccounts::try_accounts(&program_id, &accounts).err(),
+            Some(ProgramError::InvalidAccountData)
+        );
+        assert_eq!(
+            InitializeAccounts::try_accounts(&program_id, &[token.clone(), mint, program]).err(),
+            Some(ProgramError::InvalidAccountData)
+        );
+    }
+}
+
+#[test]
 fn checks_spl_token_and_token_2022() {
     #[derive(Accounts)]
     struct MintAuthorities<'acc> {

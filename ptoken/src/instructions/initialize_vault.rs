@@ -25,7 +25,7 @@ impl TryFrom<&[u8]> for InitializeVaultArgs {
 }
 
 #[derive(Accounts)]
-struct Ctx<'acc> {
+struct InitializeVault<'acc> {
     #[account(signer)]
     payer: &'acc AccountView,
 
@@ -41,10 +41,10 @@ struct Ctx<'acc> {
     vault: &'acc AccountView,
 
     #[account(mut)]
-    #[token_account(
+    #[associated_token(
+        program = token_program,
         mint = mint,
         authority = vault,
-        program = token_program
     )]
     vault_token: &'acc AccountView,
 
@@ -63,8 +63,9 @@ pub fn process(
     accounts: &mut [AccountView],
     _args: InitializeVaultArgs,
 ) -> ProgramResult {
-    let ctx = Context::<Ctx<'_>>::try_from_accounts(program_id, accounts)?;
-    let Ctx {
+    let ctx = Context::<InitializeVault<'_>>::try_from_accounts(program_id, accounts)?;
+
+    let InitializeVault {
         payer,
         mint,
         vault,

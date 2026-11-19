@@ -103,42 +103,73 @@ struct TransferAccounts<'acc> {
 
 ### `#[mint(program = token_program)]`
 
-Checks the mint layout and requires the mint's initialization byte to equal `1`. SPL Token requires the exact base mint length. Token-2022 accepts the base length or a layout with the mint account-type marker. Optional arguments add these comparisons.
+Checks the mint layout and requires the mint's initialization byte to equal `1` by default. SPL Token requires the exact base mint length. Token-2022 accepts the base length or a layout with the mint account-type marker.
 
 | Argument | What it validates |
 | --- | --- |
 | `decimals = value` | The stored decimals equal the supplied `u8`. |
 | `authority = account` | The mint authority is present and equals `account.address()`. |
 | `freeze_authority = account` | The freeze authority is present and equals `account.address()`. |
+| `allow_uninitialized` | Skips the initialization-byte check. The program, layout, and any requested field comparisons still apply. |
 
 | Default `ProgramError` | When it occurs |
 | --- | --- |
 | `IncorrectProgramId` | The program ID is unsupported, the program account is non-executable, or the mint's runtime owner differs from the program ID. |
 | `AccountBorrowFailed` | The mint data cannot be borrowed. |
 | `InvalidAccountData` | The layout is invalid, the decimals differ from the expected value, or a requested authority is absent or differs from the expected address. |
-| `UninitializedAccount` | The mint's initialization byte is any value other than `1`. |
+| `UninitializedAccount` | Initialization is required and the mint's initialization byte differs from `1`. |
 
 ### `#[token_account(program = token_program)]`
 
-Checks the token account layout and accepts both `Initialized` and `Frozen` states. SPL Token requires the exact base token account length. Token-2022 accepts the base length or a layout with the token account-type marker. Optional arguments add these comparisons.
+Checks the token account layout and accepts both `Initialized` and `Frozen` states by default. SPL Token requires the exact base token account length. Token-2022 accepts the base length or a layout with the token account-type marker.
 
 | Argument | What it validates |
 | --- | --- |
 | `mint = account` | The token account's stored mint address equals `account.address()`. |
 | `authority = account` | The token account's stored owner authority equals `account.address()`. This is the authority recorded in the token data. |
+| `allow_uninitialized` | Also accepts the `Uninitialized` state. The program, layout, and any requested field comparisons still apply. |
 
 | Default `ProgramError` | When it occurs |
 | --- | --- |
 | `IncorrectProgramId` | The program ID is unsupported, the program account is non-executable, or the token account's runtime owner differs from the program ID. |
 | `AccountBorrowFailed` | The token account data cannot be borrowed. |
 | `InvalidAccountData` | The layout or state byte is invalid, or the stored mint or owner authority differs from the expected address. |
-| `UninitializedAccount` | The token account's stored state is `Uninitialized`. |
+| `UninitializedAccount` | Initialization is required and the token account's stored state is `Uninitialized`. |
+
+For example, use `#[mint(program = token_program, allow_uninitialized)]` or `#[token_account(program = token_program, allow_uninitialized)]` with an account that already has the expected owner and layout. An extended Token-2022 account still needs its account-type marker.
 
 SPL authority arguments compare addresses. Use `#[account(signer)]` on an authority field when the instruction requires its signature.
+
+### `#[associated_token(...)]`
+
+With the `spl` feature enabled, this constraint validates an existing associated token account. The `program`, `mint`, and `authority` arguments are required and refer to account views.
+
+```rust
+use pinocchio_constraints::{AccountView, Accounts};
+
+#[derive(Accounts)]
+struct WalletTokenAccounts<'acc> {
+    #[associated_token(program = token_program, mint = mint, authority = wallet)]
+    wallet_token: &'acc AccountView,
+    mint: &'acc AccountView,
+    wallet: &'acc AccountView,
+    token_program: &'acc AccountView,
+}
+```
+
+The constraint validates the token layout, accepts the `Initialized` and `Frozen` states, matches the stored mint and owner authority, and checks the canonical PDA under the Associated Token Account program. The seeds are the authority address, token program ID, and mint address, in that order. The mint argument supplies the address for these checks. Use `#[mint(program = token_program)]` on the mint field to validate its data as well.
+
+| Default `ProgramError` | When it occurs |
+| --- | --- |
+| `IncorrectProgramId` | The token program is unsupported or non-executable, or the token account's runtime owner differs from the token program ID. |
+| `AccountBorrowFailed` | The token account data cannot be borrowed. |
+| `InvalidAccountData` | The token account layout or state byte is invalid, or the stored mint or owner authority differs from the expected address. |
+| `UninitializedAccount` | The token account's stored state is `Uninitialized`. |
+| `InvalidSeeds` | PDA derivation fails or the account address differs from the canonical associated token address. |
 
 ## Compile-time checks
 
 - Derive `Accounts` on a named struct with one account lifetime and shared `&AccountView` fields.
-- Use at most one of `#[program(...)]`, `#[mint(...)]`, and `#[token_account(...)]` per field. Combine it with general `#[account(...)]` constraints as needed.
+- Use at most one of `#[program(...)]`, `#[mint(...)]`, `#[token_account(...)]`, and `#[associated_token(...)]` per field. Combine it with general `#[account(...)]` constraints as needed.
 - Pair `seeds` with `bump`, and choose at most one of `initialized` and `uninitialized` per field.
 - Supply known, unique constraints and arguments. SPL attributes require the `spl` feature and a `program` argument.

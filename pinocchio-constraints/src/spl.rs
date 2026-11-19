@@ -1,8 +1,10 @@
-//! Mint and token account validators, available with the `spl` feature.
+//! Mint, token account, and associated token account validators, available with the `spl` feature.
 //!
 //! `#[mint(...)]` and `#[token_account(...)]` require `program`. Both validate
-//! the program, account ownership, data layout, and token state. See
+//! the program, account ownership, and data layout. Both require initialization
+//! by default and accept `allow_uninitialized` to skip that requirement. See
 //! [`ensure_mint_constraints`] and [`ensure_token_account`] for the default errors.
+//! `#[associated_token(...)]` also checks the canonical associated token address.
 //!
 //! ```
 //! use pinocchio_constraints::{AccountView, Accounts};
@@ -19,6 +21,10 @@
 //!     #[token_account(program = token_program, mint = mint, authority = payer)]
 //!     source: &'acc AccountView,
 //!
+//!     #[associated_token(program = token_program, mint = mint, authority = recipient)]
+//!     destination: &'acc AccountView,
+//!
+//!     recipient: &'acc AccountView,
 //!     token_program: &'acc AccountView,
 //! }
 //! ```
@@ -92,11 +98,31 @@ pub fn ensure_mint_constraints(
     authority: Option<&AccountView>,
     freeze_authority: Option<&AccountView>,
 ) -> Result<u8, ProgramError> {
+    validate_mint(
+        mint,
+        token_program,
+        decimals,
+        authority,
+        freeze_authority,
+        false,
+    )
+}
+
+/// Validate mint constraints with an optional initialization requirement.
+/// See [`ensure_mint_constraints`] for the errors when initialization is required.
+pub fn validate_mint(
+    mint: &AccountView,
+    token_program: &AccountView,
+    decimals: Option<u8>,
+    authority: Option<&AccountView>,
+    freeze_authority: Option<&AccountView>,
+    allow_uninitialized: bool,
+) -> Result<u8, ProgramError> {
     let check = |initialized: bool,
                  actual_decimals: u8,
                  actual_authority: Option<&Address>,
                  actual_freeze_authority: Option<&Address>| {
-        if !initialized {
+        if !allow_uninitialized && !initialized {
             return Err(ProgramError::UninitializedAccount);
         }
         if decimals.is_some_and(|expected| actual_decimals != expected)
@@ -146,8 +172,46 @@ pub fn ensure_token_account(
     authority: Option<&AccountView>,
     mint: Option<&AccountView>,
 ) -> ProgramResult {
+    validate_token_account(account, token_program, authority, mint, false)
+}
+
+/// Validate an initialized token account at the canonical associated token address.
+///
+/// The token account must hold the given mint and authority. The canonical PDA is
+/// derived from the authority, token program, and mint addresses under the Associated
+/// Token Account program ID. PDA derivation failure or an address mismatch returns
+/// [`ProgramError::InvalidSeeds`]. See [`ensure_token_account`] for token data errors.
+pub fn ensure_associated_token(
+    account: &AccountView,
+    token_program: &AccountView,
+    mint: &AccountView,
+    authority: &AccountView,
+) -> ProgramResult {
+    ensure_token_account(account, token_program, Some(authority), Some(mint))?;
+    crate::ensure_pda(
+        account,
+        &pinocchio_associated_token_account::ID,
+        &[
+            authority.address().as_ref(),
+            token_program.address().as_ref(),
+            mint.address().as_ref(),
+        ],
+        None,
+    )?;
+    Ok(())
+}
+
+/// Validate token account constraints with an optional initialization requirement.
+/// See [`ensure_token_account`] for the errors when initialization is required.
+pub fn validate_token_account(
+    account: &AccountView,
+    token_program: &AccountView,
+    authority: Option<&AccountView>,
+    mint: Option<&AccountView>,
+    allow_uninitialized: bool,
+) -> ProgramResult {
     let check = |initialized: bool, actual_authority: &Address, actual_mint: &Address| {
-        if !initialized {
+        if !allow_uninitialized && !initialized {
             return Err(ProgramError::UninitializedAccount);
         }
         if authority.is_some_and(|account| account.address() != actual_authority)

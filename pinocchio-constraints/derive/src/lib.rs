@@ -12,7 +12,10 @@ use syn::{
 mod spl;
 
 /// Bind accounts in struct field order and validate each field's constraints.
-#[proc_macro_derive(Accounts, attributes(account, program, mint, token_account))]
+#[proc_macro_derive(
+    Accounts,
+    attributes(account, program, mint, token_account, associated_token)
+)]
 pub fn derive_accounts(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     expand(input)
@@ -164,13 +167,17 @@ fn parse_constraints(
             continue;
         }
         let is_program = path.is_ident("program");
-        if !is_program && !path.is_ident("mint") && !path.is_ident("token_account") {
+        if !is_program
+            && !path.is_ident("mint")
+            && !path.is_ident("token_account")
+            && !path.is_ident("associated_token")
+        {
             continue;
         }
         if has_account_type {
             return Err(Error::new_spanned(
                 path,
-                "a field can use only one of `#[program(...)]`, `#[mint(...)]`, or `#[token_account(...)]`",
+                "a field can use only one of `#[program(...)]`, `#[mint(...)]`, `#[token_account(...)]`, or `#[associated_token(...)]`",
             ));
         }
         has_account_type = true;

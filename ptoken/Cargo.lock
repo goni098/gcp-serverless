@@ -1542,6 +1542,7 @@ name = "pinocchio-constraints"
 version = "0.1.0"
 dependencies = [
  "pinocchio 0.12.0",
+ "pinocchio-associated-token-account",
  "pinocchio-constraints-derive",
  "pinocchio-token",
  "pinocchio-token-2022",
