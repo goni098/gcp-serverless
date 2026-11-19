@@ -1,0 +1,16 @@
+[package]
+name = "pinocchio-constraints-derive"
+version = "0.1.0"
+edition = "2024"
+description = "Derive macro for the pinocchio-constraints crate"
+
+[lib]
+proc-macro = true
+
+[features]
+spl = []
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

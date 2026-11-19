@@ -1,0 +1,6 @@
+/bin/
+/node_modules/
+/target
+/ptoken/target/
+.env
+**/.DS_Store

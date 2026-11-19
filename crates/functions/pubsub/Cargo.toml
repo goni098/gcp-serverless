@@ -1,0 +1,14 @@
+[package]
+name = "pubsub"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio.workspace = true
+axum.workspace = true
+tracing.workspace = true
+serde_json.workspace = true
+toasty.workspace = true
+
+http = { path = "../../http" }
+shared = { path = "../../shared" }

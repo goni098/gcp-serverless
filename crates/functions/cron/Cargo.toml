@@ -1,0 +1,17 @@
+[package]
+name = "cron"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio.workspace = true
+tracing.workspace = true
+toasty.workspace = true
+jiff.workspace = true
+serde_json.workspace = true
+google-cloud-pubsub.workspace = true
+clap.workspace = true
+
+shared = { path = "../../shared" }
+database = { path = "../../database" }
+error = { path = "../../error" }

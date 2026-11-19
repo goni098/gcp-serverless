@@ -1,0 +1,33 @@
+[package]
+name = "ptoken"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+bytemuck = { version = "1", default-features = false, features = ["derive"] }
+pinocchio = { version = "0.12", default-features = false }
+pinocchio-constraints = { path = "../pinocchio-constraints", features = ["spl"] }
+pinocchio-system = "0.7"
+pinocchio-token = "0.8"
+pinocchio-token-2022 = "0.5"
+pinocchio-pubkey = "0.3"
+pinocchio-associated-token-account = "0.5"
+
+[target.'cfg(not(any(target_os = "solana", target_arch = "bpf")))'.dependencies]
+solana-address = { version = "2", features = ["curve25519"] }
+
+[dev-dependencies]
+base64 = "0.23"
+mollusk-svm = "0.17"
+mollusk-svm-programs-token-2022 = "0.17"
+solana-account = "5"
+solana-instruction = "4"
+solana-pubkey = "4"
+spl-token-2022-interface = "4"
+spl-token-interface = "3"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

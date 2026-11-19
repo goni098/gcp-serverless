@@ -1,0 +1,131 @@
+version = 1
+
+[schema]
+
+[[schema.tables]]
+id = 0
+name = "cake"
+primary_key = { columns = [{ table = 0, index = 0 }], index = { table = 0, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 0, index = 0 }
+name = "id"
+ty = "I32"
+storage_ty = { Integer = 4 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 0, index = 1 }
+name = "name"
+ty = "String"
+storage_ty = { VarChar = 255 }
+
+[[schema.tables.indices]]
+id = { table = 0, index = 0 }
+name = "index_cake_by_id"
+on = 0
+columns = [{ column = { table = 0, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables]]
+id = 1
+name = "fruit"
+primary_key = { columns = [{ table = 1, index = 0 }], index = { table = 1, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 1, index = 0 }
+name = "id"
+ty = "I32"
+storage_ty = { Integer = 4 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 1, index = 1 }
+name = "name"
+ty = "String"
+storage_ty = { VarChar = 255 }
+
+[[schema.tables.columns]]
+id = { table = 1, index = 2 }
+name = "cake_id"
+ty = "I32"
+storage_ty = { Integer = 4 }
+nullable = true
+
+[[schema.tables.indices]]
+id = { table = 1, index = 0 }
+name = "index_fruit_by_id"
+on = 1
+columns = [{ column = { table = 1, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 1, index = 1 }
+name = "index_fruit_by_cake_id"
+on = 1
+columns = [{ column = { table = 1, index = 2 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables]]
+id = 2
+name = "cake_filling"
+primary_key = { columns = [{ table = 2, index = 0 }, { table = 2, index = 1 }], index = { table = 2, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 2, index = 0 }
+name = "cake_id"
+ty = "I32"
+storage_ty = { Integer = 4 }
+
+[[schema.tables.columns]]
+id = { table = 2, index = 1 }
+name = "filling_id"
+ty = "I32"
+storage_ty = { Integer = 4 }
+
+[[schema.tables.indices]]
+id = { table = 2, index = 0 }
+name = "index_cake_filling_by_cake_id_and_filling_id"
+on = 2
+columns = [{ column = { table = 2, index = 0 }, op = "Eq", scope = "Partition" }, { column = { table = 2, index = 1 }, op = "Eq", scope = "Local" }]
+unique = true
+primary_key = true
+
+[[schema.tables.indices]]
+id = { table = 2, index = 1 }
+name = "index_cake_filling_by_cake_id"
+on = 2
+columns = [{ column = { table = 2, index = 0 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables.indices]]
+id = { table = 2, index = 2 }
+name = "index_cake_filling_by_filling_id"
+on = 2
+columns = [{ column = { table = 2, index = 1 }, op = "Eq", scope = "Partition" }]
+
+[[schema.tables]]
+id = 3
+name = "filling"
+primary_key = { columns = [{ table = 3, index = 0 }], index = { table = 3, index = 0 } }
+
+[[schema.tables.columns]]
+id = { table = 3, index = 0 }
+name = "id"
+ty = "I32"
+storage_ty = { Integer = 4 }
+auto_increment = true
+
+[[schema.tables.columns]]
+id = { table = 3, index = 1 }
+name = "name"
+ty = "String"
+storage_ty = { VarChar = 255 }
+
+[[schema.tables.indices]]
+id = { table = 3, index = 0 }
+name = "index_filling_by_id"
+on = 3
+columns = [{ column = { table = 3, index = 0 }, op = "Eq", scope = "Partition" }]
+unique = true
+primary_key = true

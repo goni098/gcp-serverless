@@ -1,0 +1,16 @@
+version = 1
+
+[[migrations]]
+id = 3148641073755695001
+name = "0000_basic_schema.sql"
+snapshot_name = "0000_snapshot.toml"
+
+[[migrations]]
+id = 5416779909646018135
+name = "0001_add_cake_created_at_col.sql"
+snapshot_name = "0001_snapshot.toml"
+
+[[migrations]]
+id = 6088999850294527869
+name = "0002_add_all_created_at.sql"
+snapshot_name = "0002_snapshot.toml"
