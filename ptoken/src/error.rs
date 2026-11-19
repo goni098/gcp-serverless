@@ -40,6 +40,8 @@ pub enum PtokenError {
     ZeroWithdrawalAmount = 6013,
     /// The withdrawal destination is the same account as the token vault.
     WithdrawalDestinationIsVault = 6014,
+    /// New vaults support only Token-2022 mints with the base mint layout.
+    UnsupportedToken2022Mint = 6016,
 }
 
 impl From<PtokenError> for ProgramError {

@@ -2,6 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use pinocchio::cpi::{Seed, Signer};
 use pinocchio::error::ProgramError;
 use pinocchio::{AccountView, Address, ProgramResult};
+use pinocchio_constraints::spl::ensure_token_account;
 use pinocchio_constraints::{Accounts, Context};
 
 use crate::error::{PtokenError, ensure};
@@ -36,7 +37,7 @@ struct WithdrawFromVault<'acc> {
     mint: &'acc AccountView,
 
     #[account(
-        initialized,
+        owner = crate::ID @ PtokenError::InvalidVaultStateOwner,
         seeds = [Vault::SEED, payer.address().as_ref(), mint.address().as_ref()],
         bump
     )]
@@ -63,30 +64,37 @@ pub fn process(
     args: WithdrawFromVaultArgs,
 ) -> ProgramResult {
     let ctx = Context::<WithdrawFromVault<'_>>::try_from_accounts(program_id, accounts)?;
+    let WithdrawFromVault {
+        payer,
+        mint,
+        vault,
+        vault_token,
+        destination,
+        token_program,
+    } = ctx.accounts;
+
+    Vault::new(payer, mint, vault_token, token_program).validate_data(vault)?;
+    ensure!(
+        destination.address() != vault_token.address(),
+        PtokenError::WithdrawalDestinationIsVault
+    );
+    ensure_token_account(destination, token_program, Some(payer), Some(mint))?;
 
     let bump = [ctx.bumps.vault];
     let seeds = [
         Seed::from(Vault::SEED),
-        Seed::from(ctx.accounts.payer.address().as_ref()),
-        Seed::from(ctx.accounts.mint.address().as_ref()),
+        Seed::from(payer.address().as_ref()),
+        Seed::from(mint.address().as_ref()),
         Seed::from(&bump),
     ];
 
-    pinocchio_token::instructions::Transfer::new(
-        ctx.accounts.vault_token,
-        ctx.accounts.destination,
-        ctx.accounts.vault,
-        args.amount,
-    )
-    .invoke_signed_with_program(
-        &[Signer::from(&seeds)],
-        ctx.accounts.token_program.address(),
-    )?;
+    pinocchio_token::instructions::Transfer::new(vault_token, destination, vault, args.amount)
+        .invoke_signed_with_program(&[Signer::from(&seeds)], token_program.address())?;
 
     emit!(VaultWithdrawn {
-        caller: ctx.accounts.payer.address().to_bytes(),
-        mint: ctx.accounts.mint.address().to_bytes(),
-        destination: ctx.accounts.destination.address().to_bytes(),
+        caller: payer.address().to_bytes(),
+        mint: mint.address().to_bytes(),
+        destination: destination.address().to_bytes(),
         amount: args.amount
     });
 

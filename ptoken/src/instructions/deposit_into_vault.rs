@@ -45,11 +45,11 @@ struct DepositIntoVault<'acc> {
     source_token: &'acc AccountView,
 
     #[account(
-        initialized,
+        owner = crate::ID @ PtokenError::InvalidVaultStateOwner,
         seeds = [Vault::SEED, payer.address().as_ref(), mint.address().as_ref()],
         bump
     )]
-    _vault: &'acc AccountView,
+    vault: &'acc AccountView,
 
     #[account(mut)]
     #[associated_token(
@@ -68,19 +68,23 @@ pub fn process(
     accounts: &[AccountView],
     args: DepositIntoVaultArgs,
 ) -> ProgramResult {
-    let ctx = Context::<DepositIntoVault<'_>>::try_from_accounts(program_id, accounts)?;
+    let DepositIntoVault {
+        payer,
+        mint,
+        source_token,
+        vault,
+        vault_token,
+        token_program,
+    } = Context::<DepositIntoVault<'_>>::try_from_accounts(program_id, accounts)?.accounts;
 
-    pinocchio_token::instructions::Transfer::new(
-        ctx.accounts.source_token,
-        ctx.accounts.vault_token,
-        ctx.accounts.payer,
-        args.amount,
-    )
-    .invoke_with_program(ctx.accounts.token_program.address())?;
+    Vault::new(payer, mint, vault_token, token_program).validate_data(vault)?;
+
+    pinocchio_token::instructions::Transfer::new(source_token, vault_token, payer, args.amount)
+        .invoke_with_program(token_program.address())?;
 
     emit!(VaultDeposited {
-        caller: ctx.accounts.payer.address().to_bytes(),
-        mint: ctx.accounts.mint.address().to_bytes(),
+        caller: payer.address().to_bytes(),
+        mint: mint.address().to_bytes(),
         amount: args.amount
     });
 
